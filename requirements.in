@@ -1,0 +1,61 @@
+# =============================================================================
+# hound — single source of truth for runtime dependencies.
+#
+# Edit THIS file, then regenerate the lock that every Docker image installs:
+#
+#   uv pip compile requirements.in -c constraints.txt --prerelease=allow \
+#       --python-platform linux --python-version 3.11 -o requirements.docker.txt
+#
+# Eval-only deps (ragas, datasets, …) live in requirements.eval.txt.
+# =============================================================================
+
+# --- shared: agent + processor_server + RAG ---
+python-dotenv
+huggingface-hub
+transformers[torch]
+torch
+sentence-transformers
+langchain-core >= 1.0.0
+langchain-text-splitters
+
+# --- agent ---
+langchain >= 1.0.0
+langgraph >= 1.0.0
+langchain-community >= 0.4.0
+langgraph-checkpoint-sqlite
+langchain-tavily
+langfuse
+langchain-openai
+openai
+yandexcloud
+langchain-mistralai
+langchain-gigachat-lc1
+langchain-google-genai >= 4.0.0
+
+# --- processor_server ---
+python-magic            # Linux; use python-magic-bin on Windows
+PyMuPDF
+docx2txt
+python-pptx
+faster-whisper
+ctranslate2
+av
+onnxruntime
+tokenizers
+tqdm
+torchvision
+Pillow
+pytesseract
+scikit-learn
+sentencepiece
+filetype
+langchain-qdrant
+langchain-huggingface
+qdrant-client[fastembed] == 1.16.2
+fastembed == 0.7.4
+
+# --- tg_bot ---
+aiogram
+aiohttp
+apscheduler
+requests

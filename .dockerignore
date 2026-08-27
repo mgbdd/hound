@@ -1,0 +1,40 @@
+# VCS
+.git
+.gitignore
+
+# Python caches / virtualenvs
+**/__pycache__/
+**/*.py[cod]
+.venv/
+venv/
+**/venv/
+**/.venv/
+
+# Secrets & local runtime state (provided at runtime via env_file / volumes)
+.env
+**/.env
+!.env.example
+chat_data.json
+last_processed.json
+**/chat_data.json
+**/last_processed.json
+
+# LangGraph / SQLite checkpoints
+agent/db/
+*.db
+*.db-shm
+*.db-wal
+
+# Eval artifacts
+eval/results/
+
+# Vendored bundles / archives
+processor_server/ffmpeg-8.0-essentials_build/
+*.tar
+*.gz
+*.zip
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

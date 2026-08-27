@@ -1,0 +1,46 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+**/env/
+
+# --- Secrets / local config (NEVER commit) ---
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# --- Runtime data / local state ---
+chat_data.json
+last_processed.json
+**/chat_data.json
+**/last_processed.json
+
+# --- LangGraph / SQLite checkpoints ---
+/agent/db/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# --- Eval artifacts (keep the dataset, drop generated output) ---
+/eval/results/
+
+# --- Archives / vendored bundles ---
+*.tar
+*.gz
+*.zip
+/processor_server/ffmpeg-8.0-essentials_build/
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/

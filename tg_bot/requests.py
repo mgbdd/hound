@@ -1,0 +1,177 @@
+from aiogram.types import Message
+from aiogram import Bot
+import socket
+import json
+import asyncio
+import hashlib
+import requests
+from typing import Any
+
+from langgraph_sdk import get_client
+from tg_bot.config import Config
+
+
+_assistant_id_cache: str | None = None
+
+
+def _extract_answer_payload(run_result: Any) -> dict[str, Any]:
+    if isinstance(run_result, dict):
+        if ("message_ids" in run_result) or ("answer_text" in run_result):
+            return run_result
+        for key in ("result", "values", "output", "state", "data"):
+            nested = run_result.get(key)
+            extracted = _extract_answer_payload(nested)
+            if extracted:
+                return extracted
+    elif isinstance(run_result, list):
+        for item in reversed(run_result):
+            extracted = _extract_answer_payload(item)
+            if extracted:
+                return extracted
+    return {}
+
+
+async def _get_assistant_id(client) -> str:
+    global _assistant_id_cache
+    if _assistant_id_cache:
+        return _assistant_id_cache
+
+    assistants = await client.assistants.search(graph_id=Config.RAG_GRAPH_ID, limit=1)
+    if assistants:
+        _assistant_id_cache = assistants[0]["assistant_id"]
+        return _assistant_id_cache
+
+    assistant = await client.assistants.create(
+        graph_id=Config.RAG_GRAPH_ID,
+        name="tg-bot-search-assistant",
+    )
+    _assistant_id_cache = assistant["assistant_id"]
+    return _assistant_id_cache
+
+
+async def _wait_for_rag_server(base_url: str, attempts: int = 10, delay_seconds: float = 2.0) -> bool:
+    """Wait until LangGraph API becomes reachable from tg_bot container."""
+    docs_url = f"{base_url.rstrip('/')}/docs"
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await asyncio.to_thread(requests.get, docs_url, timeout=5)
+            if response.status_code < 500:
+                return True
+        except Exception:
+            pass
+
+        if attempt < attempts:
+            await asyncio.sleep(delay_seconds)
+    return False
+
+async def process_new_messages_request(payload: dict, chat_id: str) -> tuple[bool, str | None]:
+    """Отправляет батч сообщений на processor_server. Возвращает (ok, error).
+
+    ok=True только если процессор явно подтвердил приём ("Upload successful"). Любой
+    другой ответ / обрыв / исключение -> (False, текст ошибки), и вызывающий код
+    НЕ должен двигать last_processed.
+    """
+
+    def send_socket_data() -> tuple[bool, str | None]:
+        try:
+            with socket.create_connection(('processor_server', 3030), timeout=1000) as sock:
+                sock.sendall(json.dumps(payload).encode("utf-8"))
+                sock.shutdown(socket.SHUT_WR)
+
+                chunks = []
+                while True:
+                    data = sock.recv(4096)
+                    if not data:
+                        break
+                    chunks.append(data)
+                response = b"".join(chunks).decode("utf-8", errors="replace")
+        except Exception as e:
+            return False, str(e)
+
+        if "Upload successful" in response:
+            return True, None
+        return False, f"неожиданный ответ процессора: {response!r}"
+
+    ok, err = await asyncio.to_thread(send_socket_data)
+    print(f"[processor] чат {chat_id}: ok={ok} err={err}")
+    return ok, err
+
+async def search_request(
+    payload: dict, message: Message, bot: Bot, trace_id: str | None = None
+) -> tuple[bool, list[str]]:
+    """Возвращает (ok, shown_ids). shown_ids — message_id, показанные пользователю
+    (форварднутые либо процитированные в текстовом ответе); нужны для исключения
+    при повторном поиске."""
+    try:
+        trace = trace_id or "no-trace"
+        json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        payload_fingerprint = hashlib.sha1(json_data).hexdigest()[:10]
+        print(f"[TRACE {trace}] search_request send chat_id={message.chat.id} payload_sha={payload_fingerprint}")
+        rag_ready = await _wait_for_rag_server(Config.RAG_SERVER_URL, attempts=12, delay_seconds=2.0)
+        if not rag_ready:
+            await message.answer("Сервер поиска пока запускается. Попробуйте снова через 20-30 секунд.")
+            return False, []
+        client = get_client(url=Config.RAG_SERVER_URL)
+        assistant_id = await _get_assistant_id(client)
+        thread = await client.threads.create(metadata={"chat_id": str(message.chat.id)})
+        run_result = await client.runs.wait(
+            thread_id=thread["thread_id"],
+            assistant_id=assistant_id,
+            input={"payload": payload},
+        )
+        result = _extract_answer_payload(run_result)
+        print(f"[TRACE {trace}] search_request recv payload_sha={payload_fingerprint} response={result!r}")
+        if not result:
+            await message.answer("Пустой ответ от LangGraph API.")
+            return False, []
+
+        cited_ids = [str(x).strip() for x in (result.get("message_ids") or []) if str(x).strip()]
+
+        answer_text = result.get("answer_text")
+        if isinstance(answer_text, str) and answer_text.strip():
+            print(f"[TRACE {trace}] answer_text payload_sha={payload_fingerprint}")
+            await message.answer(answer_text.strip())
+            return True, cited_ids
+
+        message_items = result.get('message_ids')
+        if message_items is None:
+            print(f"[TRACE {trace}] missing message_ids payload_sha={payload_fingerprint}")
+            await message.answer("В ответе нет поля message_ids.")
+            return False, []
+
+        # Нормализуем в список
+        if isinstance(message_items, (str, int)):
+            message_items = [message_items]
+        elif not isinstance(message_items, list):
+            await message.answer(f"Поле message_ids имеет неподдерживаемый тип: {type(message_items).__name__}")
+            return False, []
+
+        source_chat_id = message.chat.id
+        numeric_ids: list[int] = []
+        for item in message_items:
+            try:
+                numeric_ids.append(int(item))
+            except (ValueError, TypeError):
+                # Ignore non-numeric placeholders like "(пусто)"
+                continue
+
+        # No numeric message_id -> treat as unsuccessful search.
+        if not numeric_ids:
+            print(f"[TRACE {trace}] no numeric message_ids payload_sha={payload_fingerprint}")
+            await message.answer("Ничего не найдено.")
+            return False, []
+
+        print(f"[TRACE {trace}] forwarding {len(numeric_ids)} ids payload_sha={payload_fingerprint}")
+        for msg_id in numeric_ids:
+            await bot.forward_message(
+                chat_id=message.chat.id,
+                from_chat_id=source_chat_id,
+                message_id=msg_id
+            )
+
+        return True, [str(i) for i in numeric_ids]
+
+    except Exception as e:
+        print(f"[Ошибка сокет-соединения] Чат {message.chat.id}: {e}")
+        await message.answer(f"Ошибка при поиске: {e}")
+        return False, []

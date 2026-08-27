@@ -1,0 +1,9 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "hound-search": "./agent/langgraph_graph.py:graph"
+  },
+  "env": ".env"
+}

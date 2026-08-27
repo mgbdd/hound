@@ -1,0 +1,110 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    container_name: hound_agent
+    env_file:
+      - ./.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      TRANSFORMERS_VERBOSITY: "error"
+      TOKENIZERS_PARALLELISM: "false"
+      TQDM_DISABLE: "1"
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./.env:/app/.env
+      - ./config.py:/app/config.py
+      - ./.env:/app/agent/.env
+      - ./agent:/app/agent
+      - ./RAG:/app/RAG
+      - hf_cache:/root/.cache/huggingface
+    networks:
+      - hound_network
+    depends_on:
+      - processor_server
+
+  processor_server:
+    build:
+      context: .
+      dockerfile: processor_server/Dockerfile
+    container_name: hound_processor
+    env_file:
+      - ./.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      TRANSFORMERS_VERBOSITY: "error"
+      TOKENIZERS_PARALLELISM: "false"
+      TQDM_DISABLE: "1"
+    ports:
+      - "3030:3030"
+    volumes:
+      - ./.env:/app/.env
+      - ./processor_server:/app/processor_server   # монтируем код процессора
+    networks:
+      - hound_network
+
+  tg_bot:
+    build:
+      context: .
+      dockerfile: tg_bot/Dockerfile
+    container_name: hound_tg_bot
+    env_file:
+      - ./.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      TRANSFORMERS_VERBOSITY: "error"
+      TOKENIZERS_PARALLELISM: "false"
+      TQDM_DISABLE: "1"
+    volumes:
+      - ./.env:/app/.env
+      - ./chat_data.json:/app/chat_data.json
+      - ./last_processed.json:/app/last_processed.json
+      - ./tg_bot:/app/tg_bot               # монтируем код бота
+    networks:
+      - hound_network
+    depends_on:
+      - agent
+      - processor_server
+
+  rag_eval:
+    profiles: ["eval"]
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    container_name: hound_rag_eval
+    env_file:
+      - ./.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      TRANSFORMERS_VERBOSITY: "error"
+      TOKENIZERS_PARALLELISM: "false"
+      TQDM_DISABLE: "1"
+    volumes:
+      - ./:/app
+      - hf_cache:/root/.cache/huggingface
+    networks:
+      - hound_network
+    # Single-line shell script: multi-line YAML `command` can split on some setups (Windows / Compose),
+    # so python runs without --dataset and sh then tries to execute `--dataset` as a command.
+    command:
+      - sh
+      - -lc
+      - >-
+        pip install --no-cache-dir -r requirements.eval.txt &&
+        python -m eval.run_ragas_eval --dataset eval/dataset.jsonl --output-dir eval/results --fail-on-thresholds eval/thresholds.example.json
+
+networks:
+  hound_network:
+    driver: bridge
+
+volumes:
+  agent_checkpoints:
+    driver: local
+  hf_cache:
+    driver: local
