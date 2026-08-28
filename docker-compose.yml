@@ -101,8 +101,14 @@ services:
       TRANSFORMERS_VERBOSITY: "error"
       TOKENIZERS_PARALLELISM: "false"
       TQDM_DISABLE: "1"
+    # Явные монтирования вместо ./:/app — иначе в контейнер уезжает весь репо, включая .git.
     volumes:
-      - ./:/app
+      - ./.env:/app/.env
+      - ./config.py:/app/config.py
+      - ./agent:/app/agent
+      - ./RAG:/app/RAG
+      - ./eval:/app/eval
+      - ./requirements.eval.txt:/app/requirements.eval.txt
       - hf_cache:/root/.cache/huggingface
     networks:
       - hound_network
