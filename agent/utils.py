@@ -1,7 +1,27 @@
-from typing import List, Annotated, TypedDict,Optional
-from langchain_core.messages import BaseMessage
+from typing import List, TypedDict, Optional
 import os
 from pathlib import Path
+
+
+def resolve_mistral_openrouter_slug(ai_model: str) -> str:
+    """Имя модели Mistral -> slug OpenRouter.
+
+    Native Mistral API принимает mistral-*-latest; OpenRouter требует конкретный id
+    (mistralai/mistral-large-2512 и т.п.), иначе 400 invalid model ID. Если карточка
+    на OpenRouter сменилась — обновите словарь или задайте AI_MODEL с полным «/».
+    """
+    m = (ai_model or "").strip()
+    if not m:
+        raise ValueError("AI_MODEL пустой")
+    if "/" in m:
+        return m
+    key = m.lower().replace("_", "-")
+    aliases: dict[str, str] = {
+        "mistral-small-latest": "mistralai/mistral-small-3.2-24b-instruct",
+        "mistral-medium-latest": "mistralai/mistral-medium-3.1",
+        "mistral-large-latest": "mistralai/mistral-large-2512",
+    }
+    return aliases.get(key, f"mistralai/{m}")
 
 
 def coerce_to_str(value) -> str:
@@ -51,7 +71,6 @@ def get_prompt(filename):
 
 
 class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], lambda x, y: x + y] #сообщения о работе агента
     user_query: str
     chat_id: str
     message_type : str

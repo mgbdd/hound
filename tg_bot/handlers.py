@@ -144,6 +144,7 @@ async def save_single_message(message: Message, bot: Bot):
 @router.message(Command("process"))
 async def cmd_process(message: Message):
     if message.chat.type == "private":
+        await message.answer("Команда работает только в групповых чатах.")
         return
     print("Начинаем обработку новых сообщений...")
     summary = await run_processing()
@@ -153,6 +154,7 @@ async def cmd_process(message: Message):
 @router.message(Command("search"))
 async def cmd_search(message: Message, bot: Bot):
     if message.chat.type == "private":
+        await message.answer("Поиск работает только в групповых чатах.")
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:

@@ -11,26 +11,10 @@ from qdrant_client.models import Filter, FieldCondition, MatchAny, MatchValue
 from qdrant_client.http.models import PayloadSchemaType
 from langchain_qdrant.fastembed_sparse import FastEmbedSparse
 from langfuse import Langfuse
-from agent.utils import coerce_to_str
+from agent.utils import coerce_to_str, resolve_mistral_openrouter_slug
 # Провайдерские chat-модели (ChatMistralAI / ChatGoogleGenerativeAI / GigaChat / ...)
 # импортируются лениво внутри _init_model — иначе один import RAG.RAG тянет все SDK.
 import inspect
-
-
-def _resolve_mistral_openrouter_slug(ai_model: str) -> str:
-    """Дублирует логику agent/openrouter_mistral_models.py — RAG не должен зависеть от пакета agent в Docker."""
-    m = (ai_model or "").strip()
-    if not m:
-        raise ValueError("AI_MODEL пустой")
-    if "/" in m:
-        return m
-    key = m.lower().replace("_", "-")
-    aliases: dict[str, str] = {
-        "mistral-small-latest": "mistralai/mistral-small-3.2-24b-instruct",
-        "mistral-medium-latest": "mistralai/mistral-medium-3.1",
-        "mistral-large-latest": "mistralai/mistral-large-2512",
-    }
-    return aliases.get(key, f"mistralai/{m}")
 
 
 try:
@@ -152,7 +136,7 @@ class RAG:
         match AI_PROVIDER:
             case "mistral":
                 if USE_OPENROUTER:
-                    or_model = _resolve_mistral_openrouter_slug(AI_MODEL)
+                    or_model = resolve_mistral_openrouter_slug(AI_MODEL)
                     model = ChatOpenAI(
                         api_key=OPENROUTER_API_KEY,
                         base_url=OPENROUTER_BASE_URL or "https://openrouter.ai/api/v1",

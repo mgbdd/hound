@@ -1,5 +1,5 @@
 from agent.base_agent import BaseAgent
-from agent.openrouter_mistral_models import resolve_mistral_openrouter_slug
+from agent.utils import resolve_mistral_openrouter_slug
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import ChatOpenAI
 from config import (

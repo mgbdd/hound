@@ -1,8 +1,6 @@
 import inspect
 from typing import Literal
 from langchain_core.output_parsers import JsonOutputParser
-from langchain.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph
 from agent.utils import AgentState, coerce_to_str
 from RAG.RAG import RAG
@@ -16,10 +14,6 @@ from abc import ABC
 class BaseAgent(ABC):
     def __init__(self, llm):
         self.llm = llm
-        self.rag_search_tool = tool(self._rag_search)
-        self.determine_message_type_tool = tool(self._determine_message_type)
-        self.validation_tool = tool(self._rerank)
-        self.pretty_answer_tool = tool(self._pretty_answer)
         self.rag = RAG()
         self.parser = JsonOutputParser()
         self.langfuse = Langfuse()
@@ -81,8 +75,7 @@ class BaseAgent(ABC):
         # attempt_count задаётся в run() из payload и НЕ трогается нодами графа —
         # иначе ломается эскалация поиска по номеру попытки.
         try:
-            query = state["user_query"]
-            response = self.determine_message_type_tool.invoke({"query": query})
+            response = self._determine_message_type(state["user_query"])
             print(f"_call_determine_message_type_node: {response}")
             return {"message_type": response}
         except Exception as e:
@@ -103,46 +96,50 @@ class BaseAgent(ABC):
         messages = self.rag.search(
             {str(chat_id): query}, message_type, exclude_ids=exclude_ids or [], attempt=attempt
         )
-        def deduplicate_by_id(data):
-            seen = set()
-            result = []
 
+        def group_chunks_by_id(data):
+            """Один элемент на message_id: все его чанки склеены — чтобы rerank видел
+            полный текст сообщения, а не только первый чанк."""
+            by_id: dict = {}
+            order: list = []
             for item in data:
-                for key, value in item.items():
-                    if key not in seen:
-                        seen.add(key)
-                        result.append(item)
-                    break 
-            return result
+                if not isinstance(item, dict):
+                    continue
+                for mid, txt in item.items():
+                    if mid not in by_id:
+                        by_id[mid] = []
+                        order.append(mid)
+                    if isinstance(txt, str) and txt.strip():
+                        by_id[mid].append(txt.strip())
+            return [{mid: " ".join(by_id[mid])} for mid in order]
+
         return {
-            "deduplicated": deduplicate_by_id(messages),
+            "deduplicated": group_chunks_by_id(messages),
             "all_chunks": messages,
         }
-    
+
     def _call_rag_search_node(self, state: AgentState) -> AgentState:
         message_type = state["message_type"]
         exclude_ids = self._dedupe_ids_preserve_order(state.get("excluded_message_ids") or [])
         attempt = int(state.get("attempt_count") or 0)
         try:
-            response = self.rag_search_tool.invoke({
-                "query": state["user_query"],
-                "chat_id": state["chat_id"],
-                "message_type": message_type,
-                "exclude_ids": exclude_ids,
-                "attempt": attempt,
-            })
-            deduplicated = response.get("deduplicated", []) if isinstance(response, dict) else []
-            all_chunks = response.get("all_chunks", deduplicated) if isinstance(response, dict) else deduplicated
+            response = self._rag_search(
+                query=state["user_query"],
+                chat_id=state["chat_id"],
+                message_type=message_type,
+                exclude_ids=exclude_ids,
+                attempt=attempt,
+            )
+            deduplicated = response.get("deduplicated", [])
+            all_chunks = response.get("all_chunks", deduplicated)
             print(f"RAG SEARCH RESPONSE: {deduplicated}")
             return {
-                "messages": [AIMessage(content=f"Выполнен RAG поиск типа '{message_type}'.")],
                 "current_search_results": deduplicated,
                 "raw_search_results": all_chunks,
             }
         except Exception as e:
             print(f"Ошибка при вызове rag_search: {e}")
             return {
-                "messages": [AIMessage(content=f"Выполнен RAG поиск типа '{message_type}'.")],
                 "current_search_results": [],
                 "raw_search_results": [],
             }
@@ -157,41 +154,17 @@ class BaseAgent(ABC):
         prompt_name = inspect.currentframe().f_code.co_name.lstrip("_")
         prompt = self.langfuse.get_prompt(prompt_name)
         compiled_prompt = prompt.compile(query=query, messages=results)
-    
         print(f"===     FULL PROMPT NAME:\n{prompt_name}")
-        max_attempts = 3
-        last_error: Exception | None = None
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                raw_response = self.llm.invoke(compiled_prompt)
-                print(f"RAW RERANK RESPONSE: {raw_response}")
-                response_text = coerce_to_str(raw_response)
-                break
-            except Exception as e:
-                last_error = e
-                is_retryable = self._is_retryable_llm_error(e)
-                print(f"Ошибка при вызове rerank (attempt {attempt}/{max_attempts}): {e}")
-                if (not is_retryable) or attempt == max_attempts:
-                    return []
-
-                delay = (2 ** (attempt - 1)) + random.uniform(0, 0.3)
-                print(f"RERANK retry after {delay:.2f}s")
-                time.sleep(delay)
 
         try:
-            try:
-                # JsonOutputParser сам снимает ```json ... ``` и парсит
-                parsed_response = self.parser.parse(response_text)
-            except Exception:
-                return []
-            messages_id = list(parsed_response.keys())
+            raw_response = self._invoke_llm_with_retry(compiled_prompt, label="rerank")
+            response_text = coerce_to_str(raw_response)
+            # JsonOutputParser сам снимает ```json ... ``` и парсит
+            messages_id = list(self.parser.parse(response_text).keys())
             print(f"RERANK MESSAGE IDS: {messages_id}")
         except Exception as e:
             print(f"Ошибка при вызове rerank: {e}")
-            if last_error:
-                print(f"RERANK last retry error: {last_error}")
-            return []      
+            return []
 
         return messages_id
 
@@ -222,21 +195,19 @@ class BaseAgent(ABC):
             query = state["user_query"]
             current_results = state["current_search_results"]
             excluded = set(self._dedupe_ids_preserve_order(state.get("excluded_message_ids") or []))
-            rerank_results = self.validation_tool.invoke({"query": query, "results": current_results})
+            rerank_results = self._rerank(query, current_results)
             rerank_results = [
                 x for x in self._dedupe_ids_preserve_order(rerank_results)
                 if str(x).strip() not in excluded
             ]
             print("RERUNK RESULTS: ", rerank_results)
             return {
-                "messages": [AIMessage(content="Выполнен rerank")],
                 "current_search_results": rerank_results,
                 "raw_search_results": state.get("raw_search_results", current_results),
             }
         except Exception as e:
-            print(f"Ошибка при вызове _call_validation_node: {e}")
+            print(f"Ошибка при вызове _call_rerank_node: {e}")
             return {
-                "messages": [AIMessage(content="Попытка выполнить rerank")],
                 "current_search_results": [],
                 "raw_search_results": state.get("raw_search_results", []),
             }
@@ -291,7 +262,7 @@ class BaseAgent(ABC):
                             selected_messages.append({str(mid).strip(): t})
                 pretty_input = selected_messages if selected_messages else raw_results
 
-            pretty_answer = self.pretty_answer_tool.invoke({"query": state["user_query"], "results": pretty_input})
+            pretty_answer = self._pretty_answer(state["user_query"], pretty_input)
             pretty_answer_str = (pretty_answer or "").strip()
             cited_ids = self._dedupe_ids_preserve_order(
                 [str(x).strip() for x in ordered_ids if str(x).strip().isdigit()]
@@ -299,12 +270,10 @@ class BaseAgent(ABC):
             return {
                 "current_search_results": [pretty_answer_str],
                 "cited_message_ids": cited_ids,
-                "messages": [AIMessage(content="Сформирован красивый ответ")],
             }
         except Exception as e:
             print(f"Ошибка при вызове _call_pretty_answer_node: {e}")
             return {
-                "messages": [AIMessage(content="Попытка сформировать красивый ответ")],
                 "current_search_results": []
             }
 
@@ -356,7 +325,6 @@ class BaseAgent(ABC):
         в полное состояние графа. Раньше это делал BaseAgent.run()."""
         query = str(state.get("user_query", "") or "")
         return {
-            "messages": [HumanMessage(content=query)],
             "user_query": query,
             "chat_id": str(state.get("chat_id", "") or ""),
             "message_type": "",
