@@ -24,8 +24,14 @@ services:
       - langgraph_data:/app/.langgraph_api   # треды/чекпоинты langgraph API между рестартами
     networks:
       - hound_network
-    depends_on:
-      - processor_server
+    # agent ни от кого не зависит: читает Qdrant/Langfuse (внешние), процессор пишет
+    # в Qdrant независимо. healthy = langgraph импортировал граф и поднял API.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/ok',timeout=5).status==200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
 
   processor_server:
     build:
@@ -47,6 +53,13 @@ services:
       - ./processor_server:/app/processor_server   # монтируем код процессора
     networks:
       - hound_network
+    # TCP-проба порта загрузки. start_period большой: Whisper/BLIP/Marian грузятся на импорте.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost',3030),timeout=5).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 300s
 
   tg_bot:
     build:
@@ -69,8 +82,10 @@ services:
     networks:
       - hound_network
     depends_on:
-      - agent
-      - processor_server
+      agent:
+        condition: service_healthy
+      processor_server:
+        condition: service_healthy
 
   rag_eval:
     profiles: ["eval"]

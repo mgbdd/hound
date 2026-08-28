@@ -40,9 +40,9 @@ async def _get_assistant_id(client) -> str:
     return _assistant_id_cache
 
 
-async def _wait_for_rag_server(base_url: str, attempts: int = 60, delay_seconds: float = 2.0) -> bool:
-    """Ждём готовности langgraph API. Сервер грузит модели RAG/LLM на старте, поэтому
-    /docs может не отвечать ~1-2 минуты после запуска контейнера."""
+async def _wait_for_rag_server(base_url: str, attempts: int = 20, delay_seconds: float = 2.0) -> bool:
+    """Подстраховка на случай, если agent перезапускается во время работы бота.
+    Холодный старт гейтит compose (depends_on: condition: service_healthy)."""
     docs_url = f"{base_url.rstrip('/')}/docs"
     for attempt in range(1, attempts + 1):
         try:
