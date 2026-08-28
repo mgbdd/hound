@@ -3,7 +3,7 @@
     "."
   ],
   "graphs": {
-    "hound-search": "./agent/langgraph_graph.py:graph"
+    "hound-search": "./agent/graph.py:graph"
   },
   "env": ".env"
 }

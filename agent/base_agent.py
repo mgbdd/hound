@@ -1,17 +1,15 @@
-import sqlite3, inspect
+import inspect
 from typing import Literal
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.sqlite import SqliteSaver
 from agent.utils import AgentState
 from RAG.RAG import RAG
 from langfuse import Langfuse
 import re, json
 import time
 import random
-from config import CHECKPOINT_DB_PATH
 
 from abc import ABC
 
@@ -394,89 +392,87 @@ class BaseAgent(ABC):
             return "messages"
         return "text" if state.get("output_format") == "text" else "messages"
 
-    def _init_agent(self):
-        graph_builder = StateGraph(AgentState)
-        graph_builder.add_node("determine_message_type", self._call_determine_message_type_node)
-        graph_builder.add_node("route_output_node", self._call_route_output_node)
-        graph_builder.add_node("rag_search", self._call_rag_search_node)
-        graph_builder.add_node("rerank_node", self._call_rerank_node)
-        graph_builder.add_node("pretty_answer_node", self._call_pretty_answer_node)
-
-        # determine_message_type и route_output зависят только от user_query — гоняем их
-        # параллельно от START; rag_search стартует, когда завершились обе ветки.
-        graph_builder.add_edge(START, "determine_message_type")
-        graph_builder.add_edge(START, "route_output_node")
-        graph_builder.add_edge("determine_message_type", "rag_search")
-        graph_builder.add_edge("route_output_node", "rag_search")
-        graph_builder.add_edge("rag_search", "rerank_node")
-        graph_builder.add_conditional_edges("rerank_node", self._output_edge,
-                                            {
-                                                "text": "pretty_answer_node",
-                                                "messages": END
-                                            })
-        graph_builder.add_edge("pretty_answer_node", END)
-        try:
-            conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False)
-            checkpointer = SqliteSaver(conn=conn) 
-            agent = graph_builder.compile(checkpointer=checkpointer)
-        except Exception as e:
-            print(f"Ошибка при работе с SQLite: {e}")
-            raise
-        return agent
-    
-    def run(self, request: dict):
-        if not request or not hasattr(request, "items"):
-            return {"message_ids": [], "answer_text": ""}
-
-        items = list(request.items())
-        if not items:
-            return {"message_ids": [], "answer_text": ""}
-
-        chat_id, payload = items[0]
-        # payload: либо строка-запрос (легаси / eval), либо dict от parser.Parser
-        if isinstance(payload, str):
-            payload = {"query": payload}
-        query = payload.get("query", "")
-        exclude_ids = self._dedupe_ids_preserve_order(payload.get("exclude_ids") or [])
-        attempt = int(payload.get("attempt") or 0)
-        repeat = bool(payload.get("repeat", False))
-
-        initial_state = {
+    def _prepare_node(self, state: AgentState) -> AgentState:
+        """Нормализует вход клиента (user_query / chat_id / exclude / attempt / repeat)
+        в полное состояние графа. Раньше это делал BaseAgent.run()."""
+        query = str(state.get("user_query", "") or "")
+        return {
             "messages": [HumanMessage(content=query)],
             "user_query": query,
-            "chat_id": chat_id,
-            "message_type": [],
+            "chat_id": str(state.get("chat_id", "") or ""),
+            "message_type": "",
             "current_search_results": [],
             "raw_search_results": [],
             "cited_message_ids": [],
             "output_format": "messages",
-            "excluded_message_ids": exclude_ids,
-            "repeat_rag": repeat,
+            "excluded_message_ids": self._dedupe_ids_preserve_order(state.get("excluded_message_ids") or []),
+            "repeat_rag": bool(state.get("repeat_rag", False)),
             "change_type": False,
-            "attempt_count": attempt,
+            "attempt_count": int(state.get("attempt_count") or 0),
+            "message_ids": [],
+            "answer_text": "",
         }
-        # Отдельный thread на попытку: свежий /search не наследует состояние прошлого,
-        # повторные попытки одного запроса делят историю чекпоинтов.
-        thread_id = f"{chat_id}:{attempt}" if attempt else str(chat_id)
-        config = {"configurable": {"thread_id": thread_id}}
+
+    def _finalize_node(self, state: AgentState) -> AgentState:
+        """Единый выход графа: {message_ids, answer_text}. Раньше — постобработка в run()."""
+        results = state.get("current_search_results") or []
+        if len(results) == 1 and isinstance(results[0], str):
+            text_result = results[0].strip()
+            if text_result and not text_result.isdigit():
+                cited = self._dedupe_ids_preserve_order(
+                    [str(x).strip() for x in (state.get("cited_message_ids") or []) if str(x).strip().isdigit()]
+                )
+                return {"message_ids": cited, "answer_text": text_result}
+        digit_ids = self._dedupe_ids_preserve_order(
+            [str(x).strip() for x in results if str(x).strip().isdigit()]
+        )
+        return {"message_ids": digit_ids, "answer_text": ""}
+
+    def _init_agent(self):
+        gb = StateGraph(AgentState)
+        gb.add_node("prepare", self._prepare_node)
+        gb.add_node("determine_message_type", self._call_determine_message_type_node)
+        gb.add_node("route_output_node", self._call_route_output_node)
+        gb.add_node("rag_search", self._call_rag_search_node)
+        gb.add_node("rerank_node", self._call_rerank_node)
+        gb.add_node("pretty_answer_node", self._call_pretty_answer_node)
+        gb.add_node("finalize", self._finalize_node)
+
+        gb.add_edge(START, "prepare")
+        # determine_message_type и route_output зависят только от user_query — параллельно;
+        # rag_search стартует, когда завершились обе ветки.
+        gb.add_edge("prepare", "determine_message_type")
+        gb.add_edge("prepare", "route_output_node")
+        gb.add_edge("determine_message_type", "rag_search")
+        gb.add_edge("route_output_node", "rag_search")
+        gb.add_edge("rag_search", "rerank_node")
+        gb.add_conditional_edges("rerank_node", self._output_edge, {
+            "text": "pretty_answer_node",
+            "messages": "finalize",
+        })
+        gb.add_edge("pretty_answer_node", "finalize")
+        gb.add_edge("finalize", END)
+        # Без checkpointer: под langgraph API сервер подставляет свой слой персистентности
+        # (треды / чекпоинты / HIL); для eval и скриптов достаточно одноразового invoke.
+        return gb.compile()
+
+    def search(self, query: str, chat_id, exclude_ids: list | None = None,
+               attempt: int = 0, repeat: bool = False) -> dict:
+        """Одноразовый прогон графа без сервера langgraph (eval, скрипты, тесты)."""
         try:
-            result = self.agent.invoke(initial_state, config=config)
-            current_results = result.get("current_search_results", []) or []
-
-            if len(current_results) == 1 and isinstance(current_results[0], str):
-                text_result = current_results[0].strip()
-                if text_result and not text_result.isdigit():
-                    cited = result.get("cited_message_ids") or []
-                    message_ids = self._dedupe_ids_preserve_order(
-                        [str(x).strip() for x in cited if str(x).strip().isdigit()]
-                    )
-                    return {"message_ids": message_ids, "answer_text": text_result}
-
-            digit_ids = [str(x).strip() for x in current_results if str(x).strip().isdigit()]
-            message_ids = self._dedupe_ids_preserve_order(digit_ids)
-            return {"message_ids": message_ids, "answer_text": ""}
+            final = self.agent.invoke({
+                "user_query": str(query),
+                "chat_id": str(chat_id),
+                "excluded_message_ids": exclude_ids or [],
+                "attempt_count": int(attempt or 0),
+                "repeat_rag": bool(repeat),
+            })
+            return {
+                "message_ids": final.get("message_ids", []) or [],
+                "answer_text": final.get("answer_text", "") or "",
+            }
         except Exception as e:
-            print(f"Ошибка при вызове agent.invoke: {e}")  
+            print(f"Ошибка при вызове graph.invoke: {e}")
             return {"message_ids": [], "answer_text": ""}
 
 

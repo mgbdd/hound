@@ -20,7 +20,9 @@ services:
       - ./.env:/app/agent/.env
       - ./agent:/app/agent
       - ./RAG:/app/RAG
+      - ./langgraph.json:/app/langgraph.json
       - hf_cache:/root/.cache/huggingface
+      - langgraph_data:/app/.langgraph_api   # треды/чекпоинты langgraph API между рестартами
     networks:
       - hound_network
     depends_on:
@@ -104,7 +106,7 @@ networks:
     driver: bridge
 
 volumes:
-  agent_checkpoints:
-    driver: local
   hf_cache:
+    driver: local
+  langgraph_data:
     driver: local

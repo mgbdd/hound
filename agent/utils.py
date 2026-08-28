@@ -37,6 +37,9 @@ class AgentState(TypedDict):
     # message_id, отклонённые пользователем в предыдущих попытках поиска по этому запросу —
     # исключаются из RAG (Qdrant must_not) и из результатов rerank.
     excluded_message_ids: Optional[List[str]]
+    # Итог графа (нода finalize) — то, что читает клиент вместо ручного разбора состояния.
+    message_ids: Optional[List[str]]
+    answer_text: Optional[str]
     # id сообщений, по которым собран текст для pretty_answer (для eval / трассировки; tg_bot при наличии answer_text их не форвардит)
     cited_message_ids: Optional[List[str]]
     repeat_rag: bool  # флаг для повторного RAG поиска (true - пользователь дал фидбек, что данный ему ответ не подходит)

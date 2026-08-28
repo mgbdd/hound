@@ -25,7 +25,7 @@ from ragas.metrics._context_precision import context_precision
 from ragas.metrics._context_recall import context_recall
 from ragas.metrics._faithfulness import faithfulness
 
-from agent.manager import DataManager
+from agent.graph import build_agent
 from RAG.RAG import RAG
 
 
@@ -115,8 +115,8 @@ def run_predictions(
     rows: list[dict[str, Any]],
     max_samples: int | None = None,
 ) -> list[dict[str, Any]]:
-    manager = DataManager()
-    rag = RAG()
+    agent = build_agent()
+    rag = agent.rag  # переиспользуем уже загруженные модели RAG
     out: list[dict[str, Any]] = []
 
     selected_rows = rows[:max_samples] if max_samples else rows
@@ -125,8 +125,7 @@ def run_predictions(
         question = str(row["question"])
         case_id = row.get("id", f"case-{i}")
 
-        request = {str(chat_id): question}
-        response = manager.agent.run(request)
+        response = agent.search(question, chat_id)
         message_ids = [str(x).strip() for x in (response.get("message_ids", []) or [])]
         answer = (response.get("answer_text", "") or "").strip()
         contexts = restore_contexts(rag=rag, chat_id=chat_id, message_ids=message_ids)

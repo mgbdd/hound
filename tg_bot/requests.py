@@ -49,8 +49,9 @@ async def _get_assistant_id(client) -> str:
     return _assistant_id_cache
 
 
-async def _wait_for_rag_server(base_url: str, attempts: int = 10, delay_seconds: float = 2.0) -> bool:
-    """Wait until LangGraph API becomes reachable from tg_bot container."""
+async def _wait_for_rag_server(base_url: str, attempts: int = 60, delay_seconds: float = 2.0) -> bool:
+    """Ждём готовности langgraph API. Сервер грузит модели RAG/LLM на старте, поэтому
+    /docs может не отвечать ~1-2 минуты после запуска контейнера."""
     docs_url = f"{base_url.rstrip('/')}/docs"
     for attempt in range(1, attempts + 1):
         try:
@@ -104,10 +105,21 @@ async def search_request(
     при повторном поиске."""
     try:
         trace = trace_id or "no-trace"
-        json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        payload_fingerprint = hashlib.sha1(json_data).hexdigest()[:10]
+        # payload: {chat_id: {"request": q, "repeat": bool, "exclude_ids": [...], "attempt": int}}
+        chat_id_key = next(iter(payload))
+        sub = payload.get(chat_id_key) or {}
+        input_state = {
+            "user_query": sub.get("request") or sub.get("query") or "",
+            "chat_id": str(chat_id_key),
+            "excluded_message_ids": [str(x) for x in (sub.get("exclude_ids") or [])],
+            "attempt_count": int(sub.get("attempt") or 0),
+            "repeat_rag": bool(sub.get("repeat", False)),
+        }
+        payload_fingerprint = hashlib.sha1(
+            json.dumps(input_state, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:10]
         print(f"[TRACE {trace}] search_request send chat_id={message.chat.id} payload_sha={payload_fingerprint}")
-        rag_ready = await _wait_for_rag_server(Config.RAG_SERVER_URL, attempts=12, delay_seconds=2.0)
+        rag_ready = await _wait_for_rag_server(Config.RAG_SERVER_URL)
         if not rag_ready:
             await message.answer("Сервер поиска пока запускается. Попробуйте снова через 20-30 секунд.")
             return False, []
@@ -117,7 +129,7 @@ async def search_request(
         run_result = await client.runs.wait(
             thread_id=thread["thread_id"],
             assistant_id=assistant_id,
-            input={"payload": payload},
+            input=input_state,
         )
         result = _extract_answer_payload(run_result)
         print(f"[TRACE {trace}] search_request recv payload_sha={payload_fingerprint} response={result!r}")
