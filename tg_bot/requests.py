@@ -15,19 +15,9 @@ _assistant_id_cache: str | None = None
 
 
 def _extract_answer_payload(run_result: Any) -> dict[str, Any]:
+    # Граф (finalize) отдаёт финальный стейт с message_ids/answer_text наверху.
     if isinstance(run_result, dict):
-        if ("message_ids" in run_result) or ("answer_text" in run_result):
-            return run_result
-        for key in ("result", "values", "output", "state", "data"):
-            nested = run_result.get(key)
-            extracted = _extract_answer_payload(nested)
-            if extracted:
-                return extracted
-    elif isinstance(run_result, list):
-        for item in reversed(run_result):
-            extracted = _extract_answer_payload(item)
-            if extracted:
-                return extracted
+        return run_result
     return {}
 
 

@@ -1,8 +1,7 @@
 import asyncio
 import logging
 import os
-import tracemalloc
-tracemalloc.start()
+
 from aiogram import Bot, Dispatcher
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -11,8 +10,10 @@ from tg_bot.models import JsonStorage
 from tg_bot.background import process_new_messages
 from tg_bot.handlers import router
 
+logging.basicConfig(level=logging.INFO)
+
 bot = Bot(token=Config.TOKEN)
-dp = Dispatcher(bot=bot)
+dp = Dispatcher()
 
 async def on_startup():
     for fname in ("chat_data.json", "last_processed.json"):
@@ -30,7 +31,6 @@ async def on_startup():
     logging.info("Бот запущен и планировщик стартовал")
 
 async def main():
-    logging.basicConfig(level=logging.INFO)
     dp.include_router(router)
     dp.startup.register(on_startup)
     await dp.start_polling(bot)

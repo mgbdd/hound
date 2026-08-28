@@ -1,6 +1,6 @@
 import inspect
 from typing import Literal
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
@@ -392,6 +392,12 @@ class BaseAgent(ABC):
             return "messages"
         return "text" if state.get("output_format") == "text" else "messages"
 
+    def _has_query_edge(self, state: AgentState):
+        # Пустой запрос -> сразу к finalize, без прогона классификаторов и RAG.
+        if (state.get("user_query") or "").strip():
+            return ["determine_message_type", "route_output_node"]
+        return "finalize"
+
     def _prepare_node(self, state: AgentState) -> AgentState:
         """Нормализует вход клиента (user_query / chat_id / exclude / attempt / repeat)
         в полное состояние графа. Раньше это делал BaseAgent.run()."""
@@ -416,13 +422,16 @@ class BaseAgent(ABC):
     def _finalize_node(self, state: AgentState) -> AgentState:
         """Единый выход графа: {message_ids, answer_text}. Раньше — постобработка в run()."""
         results = state.get("current_search_results") or []
+        cited = self._dedupe_ids_preserve_order(
+            [str(x).strip() for x in (state.get("cited_message_ids") or []) if str(x).strip().isdigit()]
+        )
         if len(results) == 1 and isinstance(results[0], str):
             text_result = results[0].strip()
             if text_result and not text_result.isdigit():
-                cited = self._dedupe_ids_preserve_order(
-                    [str(x).strip() for x in (state.get("cited_message_ids") or []) if str(x).strip().isdigit()]
-                )
                 return {"message_ids": cited, "answer_text": text_result}
+            # pretty-answer не удался -> отдаём хотя бы id после rerank, а не пустоту
+            if cited:
+                return {"message_ids": cited, "answer_text": ""}
         digit_ids = self._dedupe_ids_preserve_order(
             [str(x).strip() for x in results if str(x).strip().isdigit()]
         )
@@ -440,9 +449,9 @@ class BaseAgent(ABC):
 
         gb.add_edge(START, "prepare")
         # determine_message_type и route_output зависят только от user_query — параллельно;
-        # rag_search стартует, когда завершились обе ветки.
-        gb.add_edge("prepare", "determine_message_type")
-        gb.add_edge("prepare", "route_output_node")
+        # rag_search стартует, когда завершились обе ветки. Пустой запрос -> сразу finalize.
+        gb.add_conditional_edges("prepare", self._has_query_edge,
+                                 ["determine_message_type", "route_output_node", "finalize"])
         gb.add_edge("determine_message_type", "rag_search")
         gb.add_edge("route_output_node", "rag_search")
         gb.add_edge("rag_search", "rerank_node")

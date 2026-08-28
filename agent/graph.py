@@ -5,6 +5,7 @@
 поэтому первый импорт тянет модели RAG, Langfuse и клиент LLM — сервер стартует не мгновенно.
 """
 
+from functools import lru_cache
 from importlib import import_module
 
 from config import AI_PROVIDER
@@ -17,13 +18,17 @@ _PROVIDERS = {
 }
 
 
+@lru_cache(maxsize=1)
 def build_agent():
-    """BaseAgent выбранного провайдера. Нужен eval/скриптам ради .search() и .rag."""
+    """BaseAgent выбранного провайдера (синглтон). Нужен eval/скриптам ради .search() и .rag."""
     key = AI_PROVIDER if AI_PROVIDER in _PROVIDERS else "yandex"
     if AI_PROVIDER not in _PROVIDERS:
         print(f"AI_PROVIDER={AI_PROVIDER!r} не поддерживается — использую yandex")
     mod_name, cls_name = _PROVIDERS[key]
-    return getattr(import_module(mod_name), cls_name)()
+    print(f"graph.py: строю агента ({key}) — это грузит модели RAG и клиент LLM...")
+    agent = getattr(import_module(mod_name), cls_name)()
+    print("graph.py: агент готов")
+    return agent
 
 
 agent = build_agent()

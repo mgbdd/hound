@@ -556,6 +556,7 @@ class RAG:
             # Расширение запроса не критично — при сбое ищем по одному оригинальному запросу.
             print(f"generate_rag_queries: расширение запроса пропущено ({e})")
             paraphrases = []
+        paraphrases = paraphrases[:4]  # не плодим retrieval round-trip'ы
         if original_query:
             return [original_query, *paraphrases]
         return paraphrases

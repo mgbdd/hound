@@ -115,7 +115,7 @@ def run_predictions(
     rows: list[dict[str, Any]],
     max_samples: int | None = None,
 ) -> list[dict[str, Any]]:
-    agent = build_agent()
+    agent = build_agent()  # синглтон (lru_cache) — тот же экземпляр, что импортирован в agent.graph
     rag = agent.rag  # переиспользуем уже загруженные модели RAG
     out: list[dict[str, Any]] = []
 

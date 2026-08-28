@@ -18,7 +18,6 @@ def resolve_mistral_openrouter_slug(ai_model: str) -> str:
 
     key = m.lower().replace("_", "-")
     aliases: dict[str, str] = {
-        # актуальные slug см. https://openrouter.ai/mistralai
         "mistral-small-latest": "mistralai/mistral-small-3.2-24b-instruct",
         "mistral-medium-latest": "mistralai/mistral-medium-3.1",
         "mistral-large-latest": "mistralai/mistral-large-2512",
