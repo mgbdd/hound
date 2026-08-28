@@ -3,6 +3,32 @@ from langchain_core.messages import BaseMessage
 import os
 from pathlib import Path
 
+
+def coerce_to_str(value) -> str:
+    """Ответ llm.invoke() -> строка.
+
+    LangChain AIMessage.content бывает str ЛИБО list[{"type":"text","text":...}]
+    (Gemini/Anthropic, часть провайдеров в LangChain 1.x). Приводим к строке любой
+    из вариантов; None -> "".
+    """
+    if value is None:
+        return ""
+    content = getattr(value, "content", value)  # разворачиваем BaseMessage
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(block.get("text") or block.get("content") or "")
+        return "\n".join(p for p in parts if p).strip()
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("content") or "").strip()
+    return str(content).strip()
+
+
 def get_filepath(filename, current_dir=Path(__file__).parent.resolve()):
     for root, dirs, files in os.walk(current_dir):
         if filename in files:

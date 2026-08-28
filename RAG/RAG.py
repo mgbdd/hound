@@ -11,6 +11,7 @@ from qdrant_client.models import Filter, FieldCondition, MatchAny, MatchValue
 from qdrant_client.http.models import PayloadSchemaType
 from langchain_qdrant.fastembed_sparse import FastEmbedSparse
 from langfuse import Langfuse
+from agent.utils import coerce_to_str
 # Провайдерские chat-модели (ChatMistralAI / ChatGoogleGenerativeAI / GigaChat / ...)
 # импортируются лениво внутри _init_model — иначе один import RAG.RAG тянет все SDK.
 import inspect
@@ -88,28 +89,6 @@ class RAG:
         # (collection, "int"|"keyword") -> индекс уже обеспечен в этом процессе.
         # Убирает лишний round-trip в Qdrant на каждом чтении.
         self._ensured_mid_index: set[tuple[str, str]] = set()
-
-    @staticmethod
-    def _coerce_to_str(value) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            parts = [RAG._coerce_to_str(item) for item in value]
-            return "\n".join([p for p in parts if p]).strip()
-        if isinstance(value, dict):
-            if isinstance(value.get("text"), str):
-                return value["text"]
-            for key in ("content", "message", "value"):
-                if key in value:
-                    nested = RAG._coerce_to_str(value.get(key))
-                    if nested:
-                        return nested
-            return ""
-        if hasattr(value, "content"):
-            return RAG._coerce_to_str(getattr(value, "content"))
-        return str(value)
 
     @staticmethod
     def _normalize_query_text(value: str) -> str:
@@ -575,7 +554,7 @@ class RAG:
         compiled_prompt = prompt.compile(query=original_query)
         try:
             queries = self._invoke_model_with_retry(compiled_prompt)
-            queries_text = self._coerce_to_str(queries)
+            queries_text = coerce_to_str(queries)
             paraphrases = self._parse_generated_queries(queries_text)
         except Exception as e:
             # Расширение запроса не критично — при сбое ищем по одному оригинальному запросу.

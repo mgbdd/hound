@@ -4,10 +4,10 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
-from agent.utils import AgentState
+from agent.utils import AgentState, coerce_to_str
 from RAG.RAG import RAG
 from langfuse import Langfuse
-import re, json
+
 import time
 import random
 
@@ -27,52 +27,6 @@ class BaseAgent(ABC):
             print("Ошибка аутентификации Langfuse.")
 
         self.agent = self._init_agent()
-
-    @staticmethod
-    def _coerce_to_str(value) -> str:
-        if value is None:
-            return ""
-
-        def extract_text(obj) -> str:
-            if obj is None:
-                return ""
-
-            if isinstance(obj, str):
-                return obj
-
-            if isinstance(obj, list):
-                parts = [extract_text(item) for item in obj]
-                return "\n".join([p for p in parts if p]).strip()
-
-            if isinstance(obj, dict):
-                if isinstance(obj.get("text"), str):
-                    return obj["text"]
-                for key in ("content", "message", "value"):
-                    if key in obj:
-                        nested = extract_text(obj.get(key))
-                        if nested:
-                            return nested
-                return ""
-            if hasattr(obj, "content"):
-                return extract_text(getattr(obj, "content"))
-
-            return str(obj)
-
-        return extract_text(value).strip()
-
-    def clear_json_str(self, s : str) :
-        match = re.search(r'```json\*(.*?)\s*```', s, re.DOTALL)
-        if match:
-            json_str = match.group(1).strip()
-            try:
-                json.loads(json_str)
-            except json.JSONDecodeError:
-                pass
-            return json_str
-
-        cleaned = re.sub(r'```json\s*', '', s)
-        cleaned = re.sub(r'\s*```', '', cleaned)
-        return cleaned.strip() 
 
     @staticmethod
     def _is_retryable_llm_error(error: Exception) -> bool:
@@ -118,7 +72,7 @@ class BaseAgent(ABC):
         try:
             response_str = self._invoke_llm_with_retry(compiled_prompt, label="determine_message_type")
             print(f"===     RESPONSE CONTENT :\n{getattr(response_str, 'content', response_str)}")
-            return self._coerce_to_str(response_str).strip() or "None"
+            return coerce_to_str(response_str).strip() or "None"
         except Exception as e:
             print(f"Ошибка при определении типа сообщения: {e}. Возвращаю дефолт.")
             return "None"
@@ -212,9 +166,7 @@ class BaseAgent(ABC):
             try:
                 raw_response = self.llm.invoke(compiled_prompt)
                 print(f"RAW RERANK RESPONSE: {raw_response}")
-                response_text = self._coerce_to_str(raw_response)
-                cleaned_response = self.clear_json_str(response_text)
-                print(f"PARSED RERANK RESPONSE: {cleaned_response}")
+                response_text = coerce_to_str(raw_response)
                 break
             except Exception as e:
                 last_error = e
@@ -229,7 +181,8 @@ class BaseAgent(ABC):
 
         try:
             try:
-                parsed_response = self.parser.parse(cleaned_response)
+                # JsonOutputParser сам снимает ```json ... ``` и парсит
+                parsed_response = self.parser.parse(response_text)
             except Exception:
                 return []
             messages_id = list(parsed_response.keys())
@@ -306,7 +259,7 @@ class BaseAgent(ABC):
         except Exception as e:
             print(f"Ошибка при вызове _pretty_answer: {e}")
             return ""
-        return self._coerce_to_str(pretty_answer)
+        return coerce_to_str(pretty_answer)
 
     def _call_pretty_answer_node(self, state: AgentState) -> AgentState:
         try:
@@ -370,7 +323,7 @@ class BaseAgent(ABC):
             print(f"Ошибка при вызове route_output: {e}. Возвращаю 'messages'.")
             return "messages"
 
-        response_text = self._coerce_to_str(raw_response).strip().lower()
+        response_text = coerce_to_str(raw_response).strip().lower()
         print(f"===     ROUTE OUTPUT RESPONSE:\n{response_text}")
         # Промпт обязан вернуть ровно "text" либо "messages"; всё остальное -> messages.
         if "text" in response_text or "текст" in response_text:
