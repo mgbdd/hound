@@ -17,7 +17,6 @@ services:
     volumes:
       - ./.env:/app/.env
       - ./config.py:/app/config.py
-      - ./.env:/app/agent/.env
       - ./agent:/app/agent
       - ./RAG:/app/RAG
       - ./langgraph.json:/app/langgraph.json
