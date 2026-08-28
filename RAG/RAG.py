@@ -9,13 +9,10 @@ import itertools
 from qdrant_client import QdrantClient, models
 from qdrant_client.models import Filter, FieldCondition, MatchAny, MatchValue
 from qdrant_client.http.models import PayloadSchemaType
-from langchain_mistralai import ChatMistralAI
 from langchain_qdrant.fastembed_sparse import FastEmbedSparse
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
-from langchain_gigachat.chat_models import GigaChat
-from langchain_community.chat_models import ChatYandexGPT
 from langfuse import Langfuse
+# Провайдерские chat-модели (ChatMistralAI / ChatGoogleGenerativeAI / GigaChat / ...)
+# импортируются лениво внутри _init_model — иначе один import RAG.RAG тянет все SDK.
 import inspect
 
 
@@ -88,6 +85,9 @@ class RAG:
         if not self.langfuse.auth_check():
             print("Ошибка аутентификации Langfuse в RAG.")
         self.model = self._init_model()
+        # (collection, "int"|"keyword") -> индекс уже обеспечен в этом процессе.
+        # Убирает лишний round-trip в Qdrant на каждом чтении.
+        self._ensured_mid_index: set[tuple[str, str]] = set()
 
     @staticmethod
     def _coerce_to_str(value) -> str:
@@ -167,6 +167,9 @@ class RAG:
         return cleaned
 
     def _init_model(self):
+        # Ленивый импорт: тянем SDK только выбранного провайдера.
+        from langchain_openai import ChatOpenAI
+
         match AI_PROVIDER:
             case "mistral":
                 if USE_OPENROUTER:
@@ -180,6 +183,7 @@ class RAG:
                         timeout=None,
                     )
                 else:
+                    from langchain_mistralai import ChatMistralAI
                     model = ChatMistralAI(
                         model=AI_MODEL,
                         temperature=0,
@@ -187,10 +191,11 @@ class RAG:
                         api_key=MISTRAL_API_KEY,
                     )
             case "yandex":
+                from langchain_community.chat_models import ChatYandexGPT
                 model = ChatYandexGPT(
                     api_key=YANDEX_API_KEY,
-                    model_name=AI_MODEL, 
-                    temperature=0, 
+                    model_name=AI_MODEL,
+                    temperature=0,
                     max_retries=2
                 )
             case "gemini":
@@ -205,6 +210,7 @@ class RAG:
                         timeout=None,
                     )
                 else:
+                    from langchain_google_genai import ChatGoogleGenerativeAI
                     model = ChatGoogleGenerativeAI(
                         google_api_key=GEMINI_API_KEY,
                         base_url=GEMINI_BASE_URL or None,
@@ -215,6 +221,7 @@ class RAG:
                         max_retries=2,
                     )
             case "gigachat":
+                from langchain_gigachat.chat_models import GigaChat
                 model = GigaChat(
                     credentials=GIGACHAT_API_KEY,
                     scope=GIGACHAT_SCOPE,
@@ -353,7 +360,9 @@ class RAG:
             return ""
         if len(cleaned) == 1:
             return cleaned[0]
-        if len(cleaned) <= 8:
+        # Точный перебор порядка только для малого n: 4! = 24, а 8! = 40320 —
+        # это ощутимая задержка на пути pretty-answer. Больше — жадная цепочка ниже.
+        if len(cleaned) <= 4:
             best: str | None = None
             best_len = None
             for perm in itertools.permutations(cleaned):
@@ -383,6 +392,8 @@ class RAG:
 
     def _ensure_message_id_integer_index(self, collection: str) -> None:
         """Для фильтра MatchAny по int нужен INTEGER-индекс."""
+        if (collection, "int") in self._ensured_mid_index:
+            return
         client = self.qdrant_client
         try:
             client.create_payload_index(
@@ -391,9 +402,13 @@ class RAG:
                 field_schema=PayloadSchemaType.INTEGER,
                 wait=True,
             )
+            self._ensured_mid_index.add((collection, "int"))
+            self._ensured_mid_index.discard((collection, "keyword"))
             return
         except Exception as e:
             if "already exists" in str(e).lower():
+                self._ensured_mid_index.add((collection, "int"))
+                self._ensured_mid_index.discard((collection, "keyword"))
                 return
         try:
             client.delete_payload_index(collection_name=collection, field_name="metadata.message_id", wait=True)
@@ -406,11 +421,15 @@ class RAG:
                 field_schema=PayloadSchemaType.INTEGER,
                 wait=True,
             )
+            self._ensured_mid_index.add((collection, "int"))
+            self._ensured_mid_index.discard((collection, "keyword"))
         except Exception as e2:
             print(f"_ensure_message_id_integer_index: {e2}")
 
     def _ensure_message_id_keyword_index(self, collection: str) -> None:
         """Для фильтра MatchAny по str нужен KEYWORD-индекс."""
+        if (collection, "keyword") in self._ensured_mid_index:
+            return
         client = self.qdrant_client
         try:
             client.create_payload_index(
@@ -419,9 +438,13 @@ class RAG:
                 field_schema=PayloadSchemaType.KEYWORD,
                 wait=True,
             )
+            self._ensured_mid_index.add((collection, "keyword"))
+            self._ensured_mid_index.discard((collection, "int"))
             return
         except Exception as e:
             if "already exists" in str(e).lower():
+                self._ensured_mid_index.add((collection, "keyword"))
+                self._ensured_mid_index.discard((collection, "int"))
                 return
         try:
             client.delete_payload_index(collection_name=collection, field_name="metadata.message_id", wait=True)
@@ -434,6 +457,8 @@ class RAG:
                 field_schema=PayloadSchemaType.KEYWORD,
                 wait=True,
             )
+            self._ensured_mid_index.add((collection, "keyword"))
+            self._ensured_mid_index.discard((collection, "int"))
         except Exception as e2:
             print(f"_ensure_message_id_keyword_index: {e2}")
 

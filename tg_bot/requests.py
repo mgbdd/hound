@@ -1,5 +1,6 @@
 from aiogram.types import Message
 from aiogram import Bot
+from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
 import socket
 import json
 import asyncio
@@ -164,14 +165,27 @@ async def search_request(
             return False, []
 
         print(f"[TRACE {trace}] forwarding {len(numeric_ids)} ids payload_sha={payload_fingerprint}")
-        for msg_id in numeric_ids:
-            await bot.forward_message(
-                chat_id=message.chat.id,
-                from_chat_id=source_chat_id,
-                message_id=msg_id
-            )
+        forwarded: list[str] = []
+        for idx, msg_id in enumerate(numeric_ids):
+            for attempt in range(2):
+                try:
+                    await bot.forward_message(
+                        chat_id=message.chat.id,
+                        from_chat_id=source_chat_id,
+                        message_id=msg_id,
+                    )
+                    forwarded.append(str(msg_id))
+                    break
+                except TelegramRetryAfter as e:
+                    print(f"[TRACE {trace}] flood control, sleep {e.retry_after}s (msg {msg_id})")
+                    await asyncio.sleep(e.retry_after + 0.5)
+                except TelegramBadRequest as e:
+                    print(f"[TRACE {trace}] forward {msg_id} failed: {e}")
+                    break
+            if idx < len(numeric_ids) - 1:
+                await asyncio.sleep(0.1)  # мягкий троттлинг, чтобы не ловить flood control
 
-        return True, [str(i) for i in numeric_ids]
+        return True, forwarded
 
     except Exception as e:
         print(f"[Ошибка сокет-соединения] Чат {message.chat.id}: {e}")
