@@ -3,7 +3,7 @@ from typing import Literal
 from langchain_core.output_parsers import JsonOutputParser
 from langchain.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph
 from agent.utils import AgentState, coerce_to_str
 from RAG.RAG import RAG
 from langfuse import Langfuse
@@ -400,7 +400,7 @@ class BaseAgent(ABC):
         gb.add_node("pretty_answer_node", self._call_pretty_answer_node)
         gb.add_node("finalize", self._finalize_node)
 
-        gb.add_edge(START, "prepare")
+        gb.set_entry_point("prepare")
         # determine_message_type и route_output зависят только от user_query — параллельно;
         # rag_search стартует, когда завершились обе ветки. Пустой запрос -> сразу finalize.
         gb.add_conditional_edges("prepare", self._has_query_edge,
@@ -413,7 +413,7 @@ class BaseAgent(ABC):
             "messages": "finalize",
         })
         gb.add_edge("pretty_answer_node", "finalize")
-        gb.add_edge("finalize", END)
+        gb.set_finish_point("finalize")
         # Без checkpointer: под langgraph API сервер подставляет свой слой персистентности
         # (треды / чекпоинты / HIL); для eval и скриптов достаточно одноразового invoke.
         return gb.compile()
