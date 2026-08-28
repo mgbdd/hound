@@ -1,6 +1,10 @@
-from processor_server.analyzers.file_analyzer import *
+import logging
+
+from processor_server.analyzers.file_analyzer import file_analyzer
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+log = logging.getLogger("hound.processor")
 
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=250,
@@ -27,10 +31,9 @@ def message_text_extractor(msg_id, raw_message):
 def message_file_extractor(msg_id, raw_message):
     document_files = []
 
-    if raw_message["message_type"] != "text" and raw_message["file_urls"] is not None:
-        for url in raw_message["file_urls"]:
-
-            description, message_type = file_analyzer(url, raw_message["message_type"])
+    if raw_message.get("message_type") != "text":
+        for file_ref in raw_message.get("file_paths") or raw_message.get("file_urls") or []:
+            description, message_type = file_analyzer(file_ref, raw_message["message_type"])
 
             if message_type == "unknown":
                 continue
@@ -59,12 +62,8 @@ def message_transformer(msg_id, raw_message):
 
 def messages_pipeline(raw_messages):
     documents = []
-    doc_index = 0
     for msg_id, raw_message in raw_messages.items():
-        print(f"Обработка сообщения {doc_index}, id:{msg_id} типа:{raw_message['message_type']}")
-        message_union = message_transformer(msg_id, raw_message)
+        log.info("Сообщение id=%s тип=%s", msg_id, raw_message.get("message_type"))
+        documents.extend(message_transformer(msg_id, raw_message))
 
-        documents.extend(message_union)
-
-    chunks = text_splitter.split_documents(documents)
-    return chunks
+    return text_splitter.split_documents(documents)

@@ -5,12 +5,14 @@ import socket
 import json
 import asyncio
 import hashlib
+import logging
 import requests
 from typing import Any
 
 from langgraph_sdk import get_client
 from tg_bot.config import Config
 
+log = logging.getLogger("hound.tg_bot")
 
 _assistant_id_cache: str | None = None
 
@@ -85,7 +87,7 @@ async def process_new_messages_request(payload: dict, chat_id: str) -> tuple[boo
         return False, f"неожиданный ответ процессора: {response!r}"
 
     ok, err = await asyncio.to_thread(send_socket_data)
-    print(f"[processor] чат {chat_id}: ok={ok} err={err}")
+    log.info(f"[processor] чат {chat_id}: ok={ok} err={err}")
     return ok, err
 
 async def search_request(
@@ -109,7 +111,7 @@ async def search_request(
         payload_fingerprint = hashlib.sha1(
             json.dumps(input_state, ensure_ascii=False).encode("utf-8")
         ).hexdigest()[:10]
-        print(f"[TRACE {trace}] search_request send chat_id={message.chat.id} payload_sha={payload_fingerprint}")
+        log.info(f"[TRACE {trace}] search_request send chat_id={message.chat.id} payload_sha={payload_fingerprint}")
         rag_ready = await _wait_for_rag_server(Config.RAG_SERVER_URL)
         if not rag_ready:
             await message.answer("Сервер поиска пока запускается. Попробуйте снова через 20-30 секунд.")
@@ -123,7 +125,7 @@ async def search_request(
             input=input_state,
         )
         result = _extract_answer_payload(run_result)
-        print(f"[TRACE {trace}] search_request recv payload_sha={payload_fingerprint} response={result!r}")
+        log.info(f"[TRACE {trace}] search_request recv payload_sha={payload_fingerprint} response={result!r}")
         if not result:
             await message.answer("Пустой ответ от LangGraph API.")
             return False, []
@@ -132,13 +134,13 @@ async def search_request(
 
         answer_text = result.get("answer_text")
         if isinstance(answer_text, str) and answer_text.strip():
-            print(f"[TRACE {trace}] answer_text payload_sha={payload_fingerprint}")
+            log.info(f"[TRACE {trace}] answer_text payload_sha={payload_fingerprint}")
             await message.answer(answer_text.strip())
             return True, cited_ids
 
         message_items = result.get('message_ids')
         if message_items is None:
-            print(f"[TRACE {trace}] missing message_ids payload_sha={payload_fingerprint}")
+            log.info(f"[TRACE {trace}] missing message_ids payload_sha={payload_fingerprint}")
             await message.answer("В ответе нет поля message_ids.")
             return False, []
 
@@ -160,11 +162,11 @@ async def search_request(
 
         # No numeric message_id -> treat as unsuccessful search.
         if not numeric_ids:
-            print(f"[TRACE {trace}] no numeric message_ids payload_sha={payload_fingerprint}")
+            log.info(f"[TRACE {trace}] no numeric message_ids payload_sha={payload_fingerprint}")
             await message.answer("Ничего не найдено.")
             return False, []
 
-        print(f"[TRACE {trace}] forwarding {len(numeric_ids)} ids payload_sha={payload_fingerprint}")
+        log.info(f"[TRACE {trace}] forwarding {len(numeric_ids)} ids payload_sha={payload_fingerprint}")
         forwarded: list[str] = []
         for idx, msg_id in enumerate(numeric_ids):
             for attempt in range(2):
@@ -177,10 +179,10 @@ async def search_request(
                     forwarded.append(str(msg_id))
                     break
                 except TelegramRetryAfter as e:
-                    print(f"[TRACE {trace}] flood control, sleep {e.retry_after}s (msg {msg_id})")
+                    log.info(f"[TRACE {trace}] flood control, sleep {e.retry_after}s (msg {msg_id})")
                     await asyncio.sleep(e.retry_after + 0.5)
                 except TelegramBadRequest as e:
-                    print(f"[TRACE {trace}] forward {msg_id} failed: {e}")
+                    log.warning(f"[TRACE {trace}] forward {msg_id} failed: {e}")
                     break
             if idx < len(numeric_ids) - 1:
                 await asyncio.sleep(0.1)  # мягкий троттлинг, чтобы не ловить flood control
@@ -188,6 +190,6 @@ async def search_request(
         return True, forwarded
 
     except Exception as e:
-        print(f"[Ошибка сокет-соединения] Чат {message.chat.id}: {e}")
+        log.warning(f"[Ошибка сокет-соединения] Чат {message.chat.id}: {e}")
         await message.answer(f"Ошибка при поиске: {e}")
         return False, []

@@ -1,6 +1,10 @@
+import logging
+
 from agent.base_agent import BaseAgent
 from langchain_gigachat.chat_models import GigaChat
 from config import GIGACHAT_API_KEY, GIGACHAT_SCOPE, AI_MODEL, AI_PROVIDER
+
+log = logging.getLogger("hound.agent")
 
 AVAILABLE_MODELS = [
     "GigaChat-2",
@@ -15,7 +19,7 @@ class GigaChatAIAgent(BaseAgent):
             raise ValueError(
                 f"Модели {current_model} нет в списке доступных моделей провайдера {AI_PROVIDER}"
             )
-        print("GIGACHAT MODEL STARTS")
+        log.info("GigaChat: model=%s", current_model)
         llm = GigaChat(
                     credentials=GIGACHAT_API_KEY,
                     scope=GIGACHAT_SCOPE,

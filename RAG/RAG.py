@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
+import logging
 import os
 import json
 import re
@@ -58,6 +59,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOTENV_PATH = os.path.join(BASE_DIR, '.env')
 load_dotenv(dotenv_path=DOTENV_PATH)
 
+log = logging.getLogger("hound.rag")
+
 class RAG:
     def __init__(self):
         self.dense_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
@@ -68,7 +71,7 @@ class RAG:
         )
         self.langfuse = Langfuse()
         if not self.langfuse.auth_check():
-            print("Ошибка аутентификации Langfuse в RAG.")
+            log.warning("Ошибка аутентификации Langfuse в RAG.")
         self.model = self._init_model()
         # (collection, "int"|"keyword") -> индекс уже обеспечен в этом процессе.
         # Убирает лишний round-trip в Qdrant на каждом чтении.
@@ -208,17 +211,17 @@ class RAG:
             self._ensure_message_id_keyword_index(collection)
             return [FieldCondition(key="metadata.message_id", match=MatchAny(any=ids))]
         except Exception as e:
-            print(f"_build_message_id_exclusion: {e}")
+            log.info(f"_build_message_id_exclusion: {e}")
             return []
 
     def retriever(self, request, chat_id, message_type, results, exclude_ids=None, attempt=0):
         collection = str(chat_id)
         try:
             if not self.qdrant_client.collection_exists(collection):
-                print(f"retriever: коллекции {collection!r} нет — пропуск запроса")
+                log.info(f"retriever: коллекции {collection!r} нет — пропуск запроса")
                 return results
         except Exception as e:
-            print(f"retriever: проверка collection_exists({collection!r}) не удалась: {e}")
+            log.info(f"retriever: проверка collection_exists({collection!r}) не удалась: {e}")
             return results
 
         exclude_ids = [str(x).strip() for x in (exclude_ids or []) if str(x).strip()]
@@ -387,7 +390,7 @@ class RAG:
             self._ensured_mid_index.add((collection, "int"))
             self._ensured_mid_index.discard((collection, "keyword"))
         except Exception as e2:
-            print(f"_ensure_message_id_integer_index: {e2}")
+            log.info(f"_ensure_message_id_integer_index: {e2}")
 
     def _ensure_message_id_keyword_index(self, collection: str) -> None:
         """Для фильтра MatchAny по str нужен KEYWORD-индекс."""
@@ -423,7 +426,7 @@ class RAG:
             self._ensured_mid_index.add((collection, "keyword"))
             self._ensured_mid_index.discard((collection, "int"))
         except Exception as e2:
-            print(f"_ensure_message_id_keyword_index: {e2}")
+            log.info(f"_ensure_message_id_keyword_index: {e2}")
 
     def fetch_merged_texts_for_message_ids(
         self,
@@ -500,7 +503,7 @@ class RAG:
                 if next_offset is None:
                     break
         except Exception as e:
-            print(f"fetch_merged_texts_for_message_ids scroll error: {e}")
+            log.warning(f"fetch_merged_texts_for_message_ids scroll error: {e}")
             return out
 
         want = set(ids)
@@ -526,7 +529,7 @@ class RAG:
                 return self.model.invoke(compiled_prompt)
             except Exception as e:
                 retryable = any(m in str(e).lower() for m in self._RETRYABLE_MARKERS)
-                print(f"Ошибка LLM (generate_rag_queries, попытка {attempt}/{max_attempts}): {e}")
+                log.warning(f"Ошибка LLM (generate_rag_queries, попытка {attempt}/{max_attempts}): {e}")
                 if (not retryable) or attempt == max_attempts:
                     raise
                 time.sleep((2 ** (attempt - 1)) + random.uniform(0, 0.3))
@@ -542,7 +545,7 @@ class RAG:
             paraphrases = self._parse_generated_queries(queries_text)
         except Exception as e:
             # Расширение запроса не критично — при сбое ищем по одному оригинальному запросу.
-            print(f"generate_rag_queries: расширение запроса пропущено ({e})")
+            log.info(f"generate_rag_queries: расширение запроса пропущено ({e})")
             paraphrases = []
         paraphrases = paraphrases[:4]  # не плодим retrieval round-trip'ы
         if original_query:
@@ -552,7 +555,7 @@ class RAG:
     def search(self, request, message_type="текстовое сообщение", exclude_ids=None, attempt=0):
         attempt = int(attempt or 0)
         exclude_ids = [str(x) for x in (exclude_ids or [])]
-        print(f"Type of message: {message_type}, attempt: {attempt}, exclude: {len(exclude_ids)}")
+        log.info(f"Type of message: {message_type}, attempt: {attempt}, exclude: {len(exclude_ids)}")
         queries = self.generate_rag_queries(request)
         raw_chat_id = list(request.keys())[0]
         try:

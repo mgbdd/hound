@@ -78,4 +78,4 @@ def pptx_file_analyzer(file_path, img_limit=None, audio_limit=None):
                         continue
                         # logging.exception("image_file_analyzer упал на слайде %s: %s", slide_idx, e)
 
-        return "".join(text_out)
+        return "\n\n".join(t for t in text_out if t)

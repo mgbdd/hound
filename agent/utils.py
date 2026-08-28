@@ -1,6 +1,9 @@
 from typing import List, TypedDict, Optional
+import logging
 import os
 from pathlib import Path
+
+log = logging.getLogger("hound.agent")
 
 
 def resolve_mistral_openrouter_slug(ai_model: str) -> str:
@@ -62,10 +65,10 @@ def get_prompt(filename):
             prompt = f.read()
             return prompt
     except FileNotFoundError:
-        print(f"Файл '{filename}' не был найден.")
+        log.warning("Файл-промпт %r не найден", filename)
         return ""
     except Exception as e:
-        print("Ошибка при чтении файла:", e)
+        log.warning("Ошибка при чтении файла %r: %s", filename, e)
         return ""
 
 

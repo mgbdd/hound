@@ -6,19 +6,18 @@
 # 6) аудио
 # 7) презентация
 
-from processor_server.typifier import *
-from processor_server.analyzers.txt_file_analyzer import *
-from processor_server.analyzers.audio_file_analyzer import *
-from processor_server.analyzers.image_file_analyzer import *
-from processor_server.analyzers.docx_file_analyzer import *
-from processor_server.analyzers.pdf_file_analyzer import *
-from processor_server.analyzers.pptx_file_analyzer import *
+from processor_server.typifier import detect_extension
+from processor_server.analyzers.txt_file_analyzer import txt_file_analyzer
+from processor_server.analyzers.audio_file_analyzer import audio_file_analyzer
+from processor_server.analyzers.image_file_analyzer import image_file_analyzer
+from processor_server.analyzers.docx_file_analyzer import docx_file_analyzer
+from processor_server.analyzers.pdf_file_analyzer import pdf_file_analyzer
+from processor_server.analyzers.pptx_file_analyzer import pptx_file_analyzer
+from processor_server.temp_file import load_temp_files, delete_temp_files
 
-from processor_server.temp_file import *
 
-
-def file_analyzer(url, raw_message_type):
-    path = load_temp_files(url)
+def file_analyzer(file_ref, raw_message_type):
+    path = load_temp_files(file_ref)
     if not path:
         return "Файл не загружен", "unknown"
 

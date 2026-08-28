@@ -1,4 +1,5 @@
 import inspect
+import logging
 from typing import Literal
 from langchain_core.output_parsers import JsonOutputParser
 from langgraph.graph import StateGraph
@@ -11,6 +12,8 @@ import random
 
 from abc import ABC
 
+log = logging.getLogger("hound.agent")
+
 class BaseAgent(ABC):
     def __init__(self, llm):
         self.llm = llm
@@ -18,7 +21,7 @@ class BaseAgent(ABC):
         self.parser = JsonOutputParser()
         self.langfuse = Langfuse()
         if not self.langfuse.auth_check():
-            print("Ошибка аутентификации Langfuse.")
+            log.warning("Ошибка аутентификации Langfuse.")
 
         self.agent = self._init_agent()
 
@@ -45,11 +48,11 @@ class BaseAgent(ABC):
             try:
                 return self.llm.invoke(compiled_prompt)
             except Exception as e:
-                print(f"Ошибка LLM ({label}, попытка {attempt}/{max_attempts}): {e}")
+                log.warning(f"Ошибка LLM ({label}, попытка {attempt}/{max_attempts}): {e}")
                 if (not self._is_retryable_llm_error(e)) or attempt == max_attempts:
                     raise
                 delay = (2 ** (attempt - 1)) + random.uniform(0, 0.3)
-                print(f"{label}: повтор через {delay:.2f}s")
+                log.info(f"{label}: повтор через {delay:.2f}s")
                 time.sleep(delay)
 
     def _determine_message_type(self, query: str) -> str:
@@ -62,13 +65,13 @@ class BaseAgent(ABC):
         prompt = self.langfuse.get_prompt(prompt_name)
 
         compiled_prompt = prompt.compile(query=query)
-        print(f"===     FULL PROMPT NAME:\n{prompt_name}")
+        log.info(f"===     FULL PROMPT NAME:\n{prompt_name}")
         try:
             response_str = self._invoke_llm_with_retry(compiled_prompt, label="determine_message_type")
-            print(f"===     RESPONSE CONTENT :\n{getattr(response_str, 'content', response_str)}")
+            log.info(f"===     RESPONSE CONTENT :\n{getattr(response_str, 'content', response_str)}")
             return coerce_to_str(response_str).strip() or "None"
         except Exception as e:
-            print(f"Ошибка при определении типа сообщения: {e}. Возвращаю дефолт.")
+            log.warning(f"Ошибка при определении типа сообщения: {e}. Возвращаю дефолт.")
             return "None"
 
     def _call_determine_message_type_node(self, state: AgentState) -> AgentState:
@@ -76,10 +79,10 @@ class BaseAgent(ABC):
         # иначе ломается эскалация поиска по номеру попытки.
         try:
             response = self._determine_message_type(state["user_query"])
-            print(f"_call_determine_message_type_node: {response}")
+            log.info(f"_call_determine_message_type_node: {response}")
             return {"message_type": response}
         except Exception as e:
-            print(f"Ошибка при вызове _determine_message_type: {e}")
+            log.warning(f"Ошибка при вызове _determine_message_type: {e}")
             return {"message_type": "текстовое сообщение"}
 
     def _rag_search(self, query: str, chat_id: int, message_type: str,
@@ -92,7 +95,7 @@ class BaseAgent(ABC):
         Возвращает список id наиболее релевантных сообщений, ничего больше.
         """
 
-        print(f"_rag_search query: {query} (attempt={attempt}, exclude={len(exclude_ids or [])})")
+        log.info(f"_rag_search query: {query} (attempt={attempt}, exclude={len(exclude_ids or [])})")
         messages = self.rag.search(
             {str(chat_id): query}, message_type, exclude_ids=exclude_ids or [], attempt=attempt
         )
@@ -132,13 +135,13 @@ class BaseAgent(ABC):
             )
             deduplicated = response.get("deduplicated", [])
             all_chunks = response.get("all_chunks", deduplicated)
-            print(f"RAG SEARCH RESPONSE: {deduplicated}")
+            log.info(f"RAG SEARCH RESPONSE: {deduplicated}")
             return {
                 "current_search_results": deduplicated,
                 "raw_search_results": all_chunks,
             }
         except Exception as e:
-            print(f"Ошибка при вызове rag_search: {e}")
+            log.warning(f"Ошибка при вызове rag_search: {e}")
             return {
                 "current_search_results": [],
                 "raw_search_results": [],
@@ -154,16 +157,16 @@ class BaseAgent(ABC):
         prompt_name = inspect.currentframe().f_code.co_name.lstrip("_")
         prompt = self.langfuse.get_prompt(prompt_name)
         compiled_prompt = prompt.compile(query=query, messages=results)
-        print(f"===     FULL PROMPT NAME:\n{prompt_name}")
+        log.info(f"===     FULL PROMPT NAME:\n{prompt_name}")
 
         try:
             raw_response = self._invoke_llm_with_retry(compiled_prompt, label="rerank")
             response_text = coerce_to_str(raw_response)
             # JsonOutputParser сам снимает ```json ... ``` и парсит
             messages_id = list(self.parser.parse(response_text).keys())
-            print(f"RERANK MESSAGE IDS: {messages_id}")
+            log.info(f"RERANK MESSAGE IDS: {messages_id}")
         except Exception as e:
-            print(f"Ошибка при вызове rerank: {e}")
+            log.warning(f"Ошибка при вызове rerank: {e}")
             return []
 
         return messages_id
@@ -200,13 +203,13 @@ class BaseAgent(ABC):
                 x for x in self._dedupe_ids_preserve_order(rerank_results)
                 if str(x).strip() not in excluded
             ]
-            print("RERUNK RESULTS: ", rerank_results)
+            log.info("RERUNK RESULTS: ", rerank_results)
             return {
                 "current_search_results": rerank_results,
                 "raw_search_results": state.get("raw_search_results", current_results),
             }
         except Exception as e:
-            print(f"Ошибка при вызове _call_rerank_node: {e}")
+            log.warning(f"Ошибка при вызове _call_rerank_node: {e}")
             return {
                 "current_search_results": [],
                 "raw_search_results": state.get("raw_search_results", []),
@@ -221,14 +224,14 @@ class BaseAgent(ABC):
         prompt_name = inspect.currentframe().f_code.co_name.lstrip("_")
         prompt = self.langfuse.get_prompt(prompt_name)
         compiled_prompt = prompt.compile(query = query, messages=results)
-        print(f"===     FULL PROMPT NAME:\n{prompt_name}")
+        log.info(f"===     FULL PROMPT NAME:\n{prompt_name}")
 
         pretty_answer = ""
         try:
             pretty_answer = self._invoke_llm_with_retry(compiled_prompt, label="pretty_answer")
-            print(f"_pretty_answer: {pretty_answer}")
+            log.info(f"_pretty_answer: {pretty_answer}")
         except Exception as e:
-            print(f"Ошибка при вызове _pretty_answer: {e}")
+            log.warning(f"Ошибка при вызове _pretty_answer: {e}")
             return ""
         return coerce_to_str(pretty_answer)
 
@@ -272,7 +275,7 @@ class BaseAgent(ABC):
                 "cited_message_ids": cited_ids,
             }
         except Exception as e:
-            print(f"Ошибка при вызове _call_pretty_answer_node: {e}")
+            log.warning(f"Ошибка при вызове _call_pretty_answer_node: {e}")
             return {
                 "current_search_results": []
             }
@@ -289,11 +292,11 @@ class BaseAgent(ABC):
         try:
             raw_response = self._invoke_llm_with_retry(compiled_prompt, label="route_output")
         except Exception as e:
-            print(f"Ошибка при вызове route_output: {e}. Возвращаю 'messages'.")
+            log.warning(f"Ошибка при вызове route_output: {e}. Возвращаю 'messages'.")
             return "messages"
 
         response_text = coerce_to_str(raw_response).strip().lower()
-        print(f"===     ROUTE OUTPUT RESPONSE:\n{response_text}")
+        log.info(f"===     ROUTE OUTPUT RESPONSE:\n{response_text}")
         # Промпт обязан вернуть ровно "text" либо "messages"; всё остальное -> messages.
         if "text" in response_text or "текст" in response_text:
             return "text"
@@ -303,9 +306,9 @@ class BaseAgent(ABC):
         try:
             fmt = self._classify_output_format(state["user_query"])
         except Exception as e:
-            print(f"Ошибка при вызове _call_route_output_node: {e}")
+            log.warning(f"Ошибка при вызове _call_route_output_node: {e}")
             fmt = "messages"
-        print(f"_call_route_output_node: {fmt}")
+        log.info(f"_call_route_output_node: {fmt}")
         return {"output_format": fmt}
 
     def _output_edge(self, state: AgentState) -> Literal["text", "messages"]:
@@ -402,7 +405,7 @@ class BaseAgent(ABC):
                 "answer_text": final.get("answer_text", "") or "",
             }
         except Exception as e:
-            print(f"Ошибка при вызове graph.invoke: {e}")
+            log.warning(f"Ошибка при вызове graph.invoke: {e}")
             return {"message_ids": [], "answer_text": ""}
 
 

@@ -61,4 +61,4 @@ def pdf_file_analyzer(file_path, img_limit=None):
 
         doc.close()
 
-    return "".join(text_out)
+    return "\n\n".join(t for t in text_out if t)

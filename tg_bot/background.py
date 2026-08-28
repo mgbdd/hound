@@ -1,9 +1,11 @@
-from datetime import datetime
+import logging
 
 from tg_bot.processing import run_processing
 
+log = logging.getLogger("hound.tg_bot")
+
 
 async def process_new_messages(bot):
-    print(f"{datetime.now()}: Фоновая обработка стартовала")
+    log.info("Фоновая обработка стартовала")
     summary = await run_processing()
-    print(f"{datetime.now()}: Фоновая обработка завершена — {summary}")
+    log.info("Фоновая обработка завершена — %s", summary)

@@ -1,3 +1,5 @@
+import logging
+
 from agent.base_agent import BaseAgent
 from agent.utils import resolve_mistral_openrouter_slug
 from langchain_mistralai import ChatMistralAI
@@ -10,6 +12,8 @@ from config import (
     OPENROUTER_BASE_URL,
     USE_OPENROUTER,
 )
+
+log = logging.getLogger("hound.agent")
 
 AVAILABLE_MODELS = [
     "mistral-small-latest",
@@ -31,13 +35,12 @@ class MistralAIAgent(BaseAgent):
                 max_retries=2,
                 timeout=None,
             )
-            print(f"Mistral через OpenRouter: model={openrouter_model!r}")
+            log.info("Mistral через OpenRouter: model=%r", openrouter_model)
         else:
             if current_model not in AVAILABLE_MODELS:
-                print(
+                raise ValueError(
                     f"Модели {current_model} нет в списке доступных моделей провайдера {AI_PROVIDER}"
                 )
-                raise ValueError(current_model)
             llm = ChatMistralAI(
                 model=current_model,
                 temperature=0.5,

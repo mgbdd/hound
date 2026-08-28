@@ -5,14 +5,14 @@ from datetime import datetime
 from tg_bot.models import StateStore
 from tg_bot.processing import run_processing
 from tg_bot.requests import search_request
-from tg_bot.config import Config
 import asyncio
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from collections import defaultdict
 from aiogram.types import CallbackQuery
 from uuid import uuid4
+import logging
 
-
+log = logging.getLogger("hound.tg_bot")
 router = Router()
 
 MAX_SEARCH_RETRIES = 3
@@ -68,7 +68,7 @@ async def flush_media_group(group_key: str, bot: Bot):
         for part in group:
             await save_single_message(part, bot)
     except Exception:
-        print(f"Ошибка при обработке группы {group_key}")
+        log.warning(f"Ошибка при обработке группы {group_key}")
 
     finally:
         media_group_tasks.pop(group_key, None)
@@ -90,53 +90,42 @@ async def save_message(message: Message, bot: Bot):
     else:
         await save_single_message(message, bot)
 
+async def _tg_file_path(bot: Bot, file_id: str) -> str:
+    """Относительный путь файла в Telegram ('photos/file_123.jpg'). Токен НЕ храним —
+    processor_server подставляет его при скачивании (см. temp_file._to_url)."""
+    f = await bot.get_file(file_id)
+    return f.file_path
+
+
 async def save_single_message(message: Message, bot: Bot):
     chat_id = str(message.chat.id)
     msg_id = str(message.message_id)
     text = message.caption or message.text or ""
     msg_type = "unknown"
-    file_urls = []
-    print(f"Сохраняем сообщение {msg_id} в чат {chat_id}, тип: {message.content_type}")
+    file_paths: list[str] = []
+
     if message.photo:
         msg_type = "photo"
-        photo = message.photo[-1]
-        file = await bot.get_file(photo.file_id)
-        file_url = f"https://api.telegram.org/file/bot{Config.TOKEN}/{file.file_path}"
-        file_urls.append(file_url)
-
-
+        file_paths.append(await _tg_file_path(bot, message.photo[-1].file_id))
     elif message.document:
         msg_type = "document"
-        file = await bot.get_file(message.document.file_id)
-        file_url = f"https://api.telegram.org/file/bot{Config.TOKEN}/{file.file_path}"
-        file_urls.append(file_url)
-
+        file_paths.append(await _tg_file_path(bot, message.document.file_id))
     elif message.video:
         msg_type = "video"
-        file = await bot.get_file(message.video.file_id)
-        file_url = f"https://api.telegram.org/file/bot{Config.TOKEN}/{file.file_path}"
-        file_urls.append(file_url)
-
+        file_paths.append(await _tg_file_path(bot, message.video.file_id))
     elif message.voice:
         msg_type = "voice"
-        file = await bot.get_file(message.voice.file_id)
-        file_url = f"https://api.telegram.org/file/bot{Config.TOKEN}/{file.file_path}"
-        file_urls.append(file_url)
-
+        file_paths.append(await _tg_file_path(bot, message.voice.file_id))
     elif message.text:
         msg_type = "text"
 
-    # elif message.video:
-    #     msg_type = "video"
-    #     file = await bot.get_file(video.file_id)
-    #     file_url = f"https://api.telegram.org/file/bot{Config.TOKEN}/{file.file_path}"
-    #     file_urls.append(file_url)
-    print(f"Сохраняем сообщение {msg_id} типа {msg_type} с текстом: {text[:50]}... и файлами: {file_urls}")
+    log.info(f"Сохраняем сообщение {msg_id} чата {chat_id}: тип={msg_type}, "
+          f"текст={text[:50]!r}, файлов={len(file_paths)}")
 
     record = {
         "message_type": msg_type,
         "text": text,
-        "file_urls": file_urls,
+        "file_paths": file_paths,
         "timestamp": (message.date or datetime.now()).isoformat(),
     }
     await StateStore.add_message(chat_id, msg_id, record)
@@ -146,9 +135,9 @@ async def cmd_process(message: Message):
     if message.chat.type == "private":
         await message.answer("Команда работает только в групповых чатах.")
         return
-    print("Начинаем обработку новых сообщений...")
+    log.info("Начинаем обработку новых сообщений...")
     summary = await run_processing()
-    print(f"Обработка завершена: {summary}")
+    log.info(f"Обработка завершена: {summary}")
     await message.answer(summary)
 
 @router.message(Command("search"))
@@ -167,7 +156,7 @@ async def cmd_search(message: Message, bot: Bot):
     last_search_state[chat_id] = {"query": query, "excluded": [], "attempts": 0, "last_ids": []}
     payload = {chat_id: {"request": query, "repeat": False, "exclude_ids": [], "attempt": 0}}
     trace_id = uuid4().hex[:10]
-    print(f"[TRACE {trace_id}] /search received chat_id={chat_id} query={query!r}")
+    log.info(f"[TRACE {trace_id}] /search received chat_id={chat_id} query={query!r}")
     try:
         ok, shown_ids = await search_request(payload, message, bot, trace_id=trace_id)
         if ok:
@@ -227,7 +216,7 @@ async def process_feedback(callback: CallbackQuery, bot: Bot):
         }
     }
     trace_id = uuid4().hex[:10]
-    print(f"[TRACE {trace_id}] /search retry chat_id={chat_id} attempt={st['attempts']} "
+    log.info(f"[TRACE {trace_id}] /search retry chat_id={chat_id} attempt={st['attempts']} "
           f"excluded={len(st['excluded'])}")
     try:
         ok, shown_ids = await search_request(payload, callback.message, bot, trace_id=trace_id)
